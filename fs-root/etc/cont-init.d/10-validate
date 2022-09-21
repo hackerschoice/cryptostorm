@@ -1,0 +1,33 @@
+#!/usr/bin/with-contenv bash
+
+CDC="\e[0;36m" # cyan
+CN="\e[0m"     # none
+
+unset is_ok
+if [[ -n $CRYPTOSTORM_CONFIG ]]; then
+  is_ok=1
+elif [[ -n $ADDRESS && -n $PSK && -n $SERVER && -n $PRIVATE_KEY ]]; then
+  is_ok=1
+fi
+
+[[ -z $is_ok ]] && {
+  echo -e "\
+Either set CRYPTOSTORM_CONFIG= or set ADDRESS=,PSK=,PRIVATE_KEY= and SERVER=\n\
+--> Try \`${CDC}docker run --rm --env CRYPTOSTORM_TOKEN=XXX --entrypoint /getkey.sh hackerschoice/cryptostorm${CN}\`"
+
+  sleep infinity
+}
+
+ip link del dev test 2>/dev/null
+if ip link add dev test type wireguard; then
+  ip link del dev test
+else
+  echo "[$(date -Iseconds)] The wireguard module is not active, try \`docker run --rm --cap-add=NET_ADMIN --cap-add=SYS_MODULE -v /lib/modules:/lib/modules\` to install it or follow the proper instructions from https://www.wireguard.com/install/ to manually install it."
+  sleep infinity
+fi
+
+if ! iptables -L > /dev/null 2>&1; then
+  echo "[$(date -Iseconds)] iptables is not functional. Ensure your container config adds --cap-add=NET_ADMIN" 
+  sleep infinity
+fi
+

@@ -1,0 +1,131 @@
+#!/usr/bin/with-contenv bash
+
+CY="\e[1;33m" # yellow
+CN="\e[0m"    # none
+
+SLOWEXIT()
+{
+  local code
+  code="$1"
+
+  shift 1
+  echo -e "[$(date -Iseconds)] $*"
+  sleep 10
+  exit "$code"
+}
+
+WARN()
+{
+  echo -e "[${CY}WARN${CN}] $*"
+}
+
+str="$CRYPTOSTORM_CONFIG"
+[[ -z $SERVER ]] && SERVER="${str%%|*}"
+str="${str#*|}"
+[[ -z $PRIVATE_KEY ]] && PRIVATE_KEY="${str%%|*}"
+str="${str#*|}"
+[[ -z $PSK ]] && PSK="${str%%|*}"
+[[ -z $ADDRESS ]] && ADDRESS="${str#*|}"
+
+[[ -z $ADDRESS ]] && ERREXIT "Bad Config."
+
+cf="/etc/wireguard/cs-${SERVER}.conf"
+
+[[ ! -f "${cf}" ]] && {
+  echo -e "Server '${SERVER}' not known."
+  cd /etc/wireguard
+  str="$(echo cs-*.conf)"
+  str="${str//cs-/}"
+  NODES="${str//\.conf/}"
+  echo -e "--> Try one of ${NODES}"
+  sleep 10
+  exit
+}
+
+[[ -z $END_POINT ]] && {
+  str="$(grep ^Endpoint "${cf}")"
+  END_POINT="${str##* }"
+  [[ -z $END_POINT ]] && SLOWEXIT 250 "${cf}: No Endpoint found"
+}
+
+[[ -z $PUBLIC_KEY ]] && {
+  str="$(grep ^PublicKey "${cf}")"
+  PUBLIC_KEY="${str##* }"
+  [[ -z $PUBLIC_KEY ]] && SLOWEXIT 250 "${cf}: No PublicKey found"
+}
+
+[[ $(sysctl net.ipv4.ip_forward -b) -ne 1 ]] && WARN "ip_forward= not set"
+[[ $(sysctl net.ipv4.conf.all.src_valid_mark -b) -ne 1 ]] && WARN "net.ipv4.conf.all.src_valid_mark= not set"
+
+# Allow WireGuard traffic to the endpoint
+str=$(host "${END_POINT%%\:*}")
+EP_IP="${str##* }"
+[[ -z $EP_IP ]] && SLOWEXIT 250 "EP_IP not set..."
+EP_PORT="${END_POINT##*\:}"
+EP_PORT="${EP_PORT:-51820}"
+iptables -A OUTPUT -o eth0 -p udp -m udp -d "${EP_IP}" --dport "${EP_PORT}" -j ACCEPT
+# ip6tables -A OUTPUT -o eth0 -p udp -m udp --dport 51820 -j ACCEPT
+
+( umask 077 && { cat >/etc/wireguard/wg0.conf <<-EOF
+[Interface]
+PrivateKey = ${PRIVATE_KEY}
+Address = ${ADDRESS}
+DNS = ${DNS}
+Table = ${TABLE}
+PreUp = ${PRE_UP}
+PostUp = ${POST_UP}
+PreDown = ${PRE_DOWN}
+PostDown = ${POST_DOWN}
+
+[Peer]
+Presharedkey = ${PSK}
+PublicKey = ${PUBLIC_KEY}
+Endpoint = ${EP_IP}:${EP_PORT}
+AllowedIPs = ${ALLOWED_IPS:-0.0.0.0/0}
+PersistentKeepalive = ${PERSISTENT_KEEP_ALIVE:-25}
+EOF
+} && sync )
+
+wg-quick up wg0
+n=0
+while :; do
+  last=$(wg show wg0 latest-handshakes 2>/dev/null)
+  last="${last##*[[:space:]]}"
+  [[ $last -gt 0 ]] && break
+
+  ((n++))
+  [[ $n -gt 20 ]] && SLOWEXIT 0 "Timeout..."
+  sleep 0.5
+done
+
+echo "[$(date -Iseconds)] Connected! \(ᵔᵕᵔ)/"
+
+if [[ -n ${RECONNECT} ]]; then
+  echo "[$(date -Iseconds)] Reconnecting in ${RECONNECT} seconds"
+  re=$RECONNECT
+fi
+n=0
+while :; do
+  last=$(wg show wg0 latest-handshakes 2>/dev/null)
+  last="${last##*[[:space:]]}"
+
+  [ -z "$last" ] && break
+
+  hs_age=$(( $(date -u +%s) - "${last}" ))
+  if [ $hs_age -le 180 ]; then
+    [ $n -gt 0 ] && echo "[$(date -Iseconds)] Re-Handshake complete!"
+    n=0
+  else
+    ((n++))
+    echo -e "[$(date -Iseconds)] Strike #${n}: No handshake for $hs_age sec..."
+    [ $n -gt 3 ] && break
+  fi
+  sleep 10
+  [[ -n $RECONNECT ]] && {
+    re=$((re - 10))
+    [ $re -le 0 ] && break
+  }
+done
+
+echo "[$(date -Iseconds)] RESTARTING..."
+sleep 5
