@@ -1,6 +1,7 @@
 #!/usr/bin/with-contenv bash
 
 CY="\e[1;33m" # yellow
+CDM="\e[0;35m" # magenta
 CN="\e[0m"    # none
 
 SLOWEXIT()
@@ -9,7 +10,7 @@ SLOWEXIT()
   code="$1"
 
   shift 1
-  echo -e "[$(date -Iseconds)] $*"
+  echo -e "[${CY}ERROR${CN}] $*"
   sleep 10
   exit "$code"
 }
@@ -19,15 +20,138 @@ WARN()
   echo -e "[${CY}WARN${CN}] $*"
 }
 
+
+# auto_select_server <position>
+#   Select the nearest server. Position can 0, 1, 2, .. for
+#     the 1st, 2nd, 3rd, ...server in the list.
+#   Set SERVER, END_POINT, EP_IP and EP_PORT
+# Note: Should only be called if WireGuard is DOWN
+# Note: I wish CS would provide an API to request nearest server and
+#       configuration based on my current IP location. This is mad...
+auto_select_server()
+{
+  local pos
+  local str
+  local ep
+  local name
+  local servers
+  local hosts
+  local ports
+
+  echo "[+] Picking fastest server...."
+  unset SERVER
+  unset EP_IP
+  unset EP_PORT
+
+  pos="$1"
+  [[ -z $pos ]] && pos=0
+
+  # At the moment END_POINT are all <name>.cstorm.is but this may change...
+  # Better read END_POINT from the config file...
+  local h
+  local p
+  for cf in $(cd /etc/wireguard; echo cs*.conf); do
+    name="${cf//cs-/}"
+    name="${name//\.conf/}"
+    [[ -z $name ]] && continue
+
+    str="$(grep ^Endpoint "/etc/wireguard/${cf}")"
+    str="${str##* }"
+    p="${str##*\:}"
+    h="${str%%\:*}"
+    [[ -z $h ]] && continue
+    hosts+=("${h}")
+    ports+=("${p}")
+    servers+=("${name}")
+  done
+
+  # hosts=("atlanta.cstorm.is" "austria.cstorm.is" "noexist.thc" "barcelona.cstorm.is")
+  unset res
+
+  # Use size 42 (20 IP + 8 ICMP + 42 Payload == 70)
+  iptables -A OUTPUT -o eth0 -p icmp -m length --length 70 -j ACCEPT
+  readarray -t res < <(fping -c5 -4 -q -b 42 "${hosts[@]}" 2>&1)
+  iptables -D OUTPUT -o eth0 -p icmp -m length --length 70 -j ACCEPT
+
+  # Return if we didnt get any results...
+  [[ ${#res[@]} -le 0 ]] && { WARN "No results from any server. Firewalled?"; return; }
+
+  # If one of the hosts did not resolve then its discarded from
+  # the result list. Thus we need to match them all up again
+  local n
+  local max
+  local avg
+  local arr
+  n=0
+  unset arr
+  while [[ $n -lt "${#res[@]}" ]]; do
+    str="${res[$n]}"
+    ((n++))
+    loss="${str%\%*}"
+    loss="${loss##*/}"
+    [[ $loss -gt 20 ]] && continue # more than 1 packet got lost.
+    name="${str%% *}"
+    max="${str##*/}"
+    str="${str%/*}"
+    avg="${str##*/}"
+    # Arrange so that average is first (for sort -n)
+    arr+=("$avg $name")
+  done
+
+  # All have packet loss?
+  [[ ${#arr[@]} -le 0 ]] && { WARN "Could not ping any server. Firewalled?"; return; }
+
+  # Sort list and store in array
+  unset sorted
+  readarray -t sorted < <(shuf -e "${arr[@]}" | sort  -n)
+
+  # Need to match up sorted list's hostnames with the original
+  # list of hosts (positions)
+  n=0
+  unset pos_arr
+  while [[ $n -lt ${#sorted[@]} && $n -le $pos ]]; do
+    str="${sorted[$n]}"
+    str="${str##* }"
+    ((n++))
+    # Find this host in our hosts array
+    i=0
+    while [[ $i -lt ${#hosts[@]} ]]; do
+      host="${hosts[$i]}"
+      [[ "$host" == "$str" ]] && { pos_arr+=("$i"); break; }
+      ((i++))
+    done
+  done
+
+  # See if POS is beyond end of array
+  [[ $pos -ge ${#pos_arr[@]} ]] && { WARN "Server #${pos} not found. Only ${#pos_arr[@]} available."; return; }
+
+  n=${pos_arr[$pos]}
+  SERVER="${servers[$n]}"
+  h="${hosts[$n]}"
+  END_POINT="${h}"
+  [[ -n ${ports[$n]} ]] && END_POINT+=":${ports[$n]}"
+
+  str=$(host -4 "${hosts[$n]}" | grep -v IPv6 | head -n1)
+  EP_IP="${str##* }"
+  EP_PORT="${END_POINT##*\:}"
+  EP_PORT="${EP_PORT:-51820}"
+  echo -e "[+] Using ${CDM}${h}${CN} (${EP_IP}:${EP_PORT})"
+}
+
 str="$CRYPTOSTORM_CONFIG"
-[[ -z $SERVER ]] && SERVER="${str%%|*}"
-str="${str#*|}"
-[[ -z $PRIVATE_KEY ]] && PRIVATE_KEY="${str%%|*}"
-str="${str#*|}"
-[[ -z $PSK ]] && PSK="${str%%|*}"
-[[ -z $ADDRESS ]] && ADDRESS="${str#*|}"
+[[ -z $SERVER ]] && SERVER="${str%%:::*}"
+str="${str#*:::}"
+[[ -z $PRIVATE_KEY ]] && PRIVATE_KEY="${str%%:::*}"
+str="${str#*:::}"
+[[ -z $PSK ]] && PSK="${str%%:::*}"
+[[ -z $ADDRESS ]] && ADDRESS="${str#*:::}"
 
 [[ -z $ADDRESS ]] && ERREXIT "Bad Config."
+
+# If SERVER is AUTO or EMPTY then auto-select a server...
+[[ "${SERVER,,}" == "auto" ]] && unset SERVER
+[[ -z "${SERVER}" ]] && auto_select_server
+[[ -z ${SERVER} ]] && SLOWEXIT 249 "No Server found..."
 
 cf="/etc/wireguard/cs-${SERVER}.conf"
 
@@ -57,12 +181,15 @@ cf="/etc/wireguard/cs-${SERVER}.conf"
 [[ $(sysctl net.ipv4.ip_forward -b) -ne 1 ]] && WARN "ip_forward= not set"
 [[ $(sysctl net.ipv4.conf.all.src_valid_mark -b) -ne 1 ]] && WARN "net.ipv4.conf.all.src_valid_mark= not set"
 
-# Allow WireGuard traffic to the endpoint
-str=$(host "${END_POINT%%\:*}")
-EP_IP="${str##* }"
-[[ -z $EP_IP ]] && SLOWEXIT 250 "EP_IP not set..."
-EP_PORT="${END_POINT##*\:}"
+# Allow WireGuard traffic to the endpoint. Alpine's 'host -4' still returns IPv6 as well..
+
+[[ -z $EP_IP ]] && {
+  str=$(host -4 "${END_POINT%%\:*}" | grep -v IPv6)
+  EP_IP="${str##* }"
+  EP_PORT="${END_POINT##*\:}"
+}
 EP_PORT="${EP_PORT:-51820}"
+[[ -z $EP_IP ]] && SLOWEXIT 250 "EP_IP not set..."
 iptables -A OUTPUT -o eth0 -p udp -m udp -d "${EP_IP}" --dport "${EP_PORT}" -j ACCEPT
 # ip6tables -A OUTPUT -o eth0 -p udp -m udp --dport 51820 -j ACCEPT
 
@@ -70,7 +197,7 @@ iptables -A OUTPUT -o eth0 -p udp -m udp -d "${EP_IP}" --dport "${EP_PORT}" -j A
 [Interface]
 PrivateKey = ${PRIVATE_KEY}
 Address = ${ADDRESS}
-DNS = ${DNS}
+DNS = ${DNS:-1.1.1.1}
 Table = ${TABLE}
 PreUp = ${PRE_UP}
 PostUp = ${POST_UP}

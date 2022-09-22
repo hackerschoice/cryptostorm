@@ -59,10 +59,10 @@ str="$(echo cs-*.conf)"
 str="${str//cs-/}"
 NODES="${str//\.conf/}"
 
-echo -e "${CDC}CRYPTOSTORM_CONFIG${CN}=${CDY}SERVER${CDG}|${PRIVATE_KEY}|${PSK}|${MYIP}${CN}"
-echo -e "--> ${CDY}SERVER${CN} being one of ${CDM}${NODES}${CN}"
-echo -e "${CDC}PRIVATE_KEY${CN}=${CDG}${PRIVATE_KEY}${CN}"
-echo -e "${CDC}PSK${CN}=${CDG}${PSK}${CN}"
-echo -e "${CDC}ADDRESS${CN}=${CDG}${MYIP}${CN}"
-
+echo -e "PRIVATE_KEY$=${PRIVATE_KEY}"
+echo -e "PSK$=${PSK}"
+echo -e "ADDRESS$=${MYIP}"
+echo -e "${CDC}CRYPTOSTORM_CONFIG${CN}=${CDG}auto:::${PRIVATE_KEY}:::${PSK}:::${MYIP}${CN}"
+echo -e "--> The fastest server is picked automatically. Otherwise replace"
+echo -e "--> \`auto\` with \`iceland\` or any other server name."
 
