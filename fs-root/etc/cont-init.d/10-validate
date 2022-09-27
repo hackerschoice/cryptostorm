@@ -4,16 +4,27 @@ CDC="\e[0;36m" # cyan
 CN="\e[0m"     # none
 
 unset is_ok
-if [[ -n $CRYPTOSTORM_CONFIG ]]; then
-  is_ok=1
-elif [[ -n $ADDRESS && -n $PSK && -n $SERVER && -n $PRIVATE_KEY ]]; then
-  is_ok=1
-fi
+
+[[ -z $PROVIDER ]] && PROVIDER="cryptostorm"
+
+[[ -n $CONFIG ]] && is_ok=1
+[[ -z $is_ok ]] && {
+  [[ $PROVIDER == "cryptostorm" && -n ADDRESS && -n $SERVER && -n $PRIVATE_KEY && -n $PSK ]] && is_ok=1
+  [[ $PROVIDER == "mullvad" && -n ADDRESS && -n $SERVER && -n $PRIVATE_KEY ]] && is_ok=1
+}
 
 [[ -z $is_ok ]] && {
-  echo -e "\
-Either set CRYPTOSTORM_CONFIG= or set ADDRESS=,PSK=,PRIVATE_KEY= and SERVER=\n\
---> Try \`${CDC}docker run --rm --env CRYPTOSTORM_TOKEN=XXX --entrypoint /getkey.sh hackerschoice/cryptostorm${CN}\`"
+  if [[ $PROVIDER == "cryptostorm" ]]; then
+    echo -e "\
+Either set CONFIG= or set ADDRESS=,PSK=,PRIVATE_KEY= and SERVER=\n\
+--> Try \`${CDC}docker run --rm --env TOKEN=XXX --entrypoint /getkey.sh hackerschoice/cryptostorm${CN}\`"
+  elif [[ $PROVIDER == "mullvad" ]]; then  
+    echo -e "\
+Either set CONFIG= or set ADDRESS=,PRIVATE_KEY= and SERVER=\n\
+--> Get this information from https://mullvad.net/en/account/#/wireguard-config"
+  else
+    echo -e "Either set CONFIG= or set ADDRESS=,PRIVATE_KEY= and SERVER="
+  fi
 
   sleep infinity
 }

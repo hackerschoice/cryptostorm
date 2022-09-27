@@ -1,4 +1,4 @@
-FROM ghcr.io/linuxserver/baseimage-alpine:3.15
+FROM ghcr.io/linuxserver/baseimage-alpine:3.16
 LABEL maintainer="The Hacker's Choice - Join us at https://t.me/thcorg"
 
 # Data is send every 25 seconds at least. Session is active for 120 seconds

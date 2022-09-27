@@ -1,6 +1,8 @@
 #!/bin/bash
 
-echo "[$(date -Iseconds)] Connection summary:"
-wg show wg0
-wg-quick down wg0
-rm -f /etc/wireguard/wg0.conf
+[[ -f /etc/wireguard/wg0.conf ]] && {
+	echo "[$(date -Iseconds)] Connection summary:"
+	wg show wg0
+	wg-quick down wg0 2>/dev/null
+	rm -f /etc/wireguard/wg0.conf
+}

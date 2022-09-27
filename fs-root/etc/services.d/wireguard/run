@@ -38,7 +38,7 @@ auto_select_server()
   local hosts
   local ports
 
-  echo "[+] Picking fastest server...."
+  echo "[+] Finding fastest server...."
   unset SERVER
   unset EP_IP
   unset EP_PORT
@@ -50,12 +50,11 @@ auto_select_server()
   # Better read END_POINT from the config file...
   local h
   local p
-  for cf in $(cd /etc/wireguard; echo cs*.conf); do
-    name="${cf//cs-/}"
-    name="${name//\.conf/}"
+  for cf in $(cd "/etc/wireguard-${PROVIDER}"; echo *.conf); do
+    name="${cf//\.conf/}"
     [[ -z $name ]] && continue
 
-    str="$(grep ^Endpoint "/etc/wireguard/${cf}")"
+    str="$(grep ^Endpoint "/etc/wireguard-${PROVIDER}/${cf}")"
     str="${str##* }"
     p="${str##*\:}"
     h="${str%%\:*}"
@@ -74,7 +73,7 @@ auto_select_server()
   iptables -D OUTPUT -o eth0 -p icmp -m length --length 70 -j ACCEPT
 
   # Return if we didnt get any results...
-  [[ ${#res[@]} -le 0 ]] && { WARN "No results from any server. Firewalled?"; return; }
+  [[ ${#res[@]} -le 0 ]] && { WARN "No results from any server (PROVIDER=${PROVIDER}). Firewalled?"; return; }
 
   # If one of the hosts did not resolve then its discarded from
   # the result list. Thus we need to match them all up again
@@ -126,133 +125,182 @@ auto_select_server()
   [[ $pos -ge ${#pos_arr[@]} ]] && { WARN "Server #${pos} not found. Only ${#pos_arr[@]} available."; return; }
 
   n=${pos_arr[$pos]}
-  SERVER="${servers[$n]}"
+  AUTO_SERVER="${servers[$n]}"
   h="${hosts[$n]}"
   END_POINT="${h}"
   [[ -n ${ports[$n]} ]] && END_POINT+=":${ports[$n]}"
 
-  str=$(host -4 "${hosts[$n]}" | grep -v IPv6 | head -n1)
+  # Translate to IP address if it isnt already
+  str="${hosts[$n]}"
+  [[ ! $str =~ ^[0-9] ]] && {
+    str=$(host -4 "${str}" | grep -v IPv6 | head -n1)
+    [[ ! $str =~ ^[0-9] ]] && return
+  }
   EP_IP="${str##* }"
   EP_PORT="${END_POINT##*\:}"
   EP_PORT="${EP_PORT:-51820}"
-  echo -e "[+] Using ${CDM}${h}${CN} (${EP_IP}:${EP_PORT})"
+  echo -e "[+] Using ${CDM}${AUTO_SERVER}${CN} (${EP_IP}:${EP_PORT})"
 }
 
-str="$CRYPTOSTORM_CONFIG"
-[[ -z $SERVER ]] && SERVER="${str%%:::*}"
-str="${str#*:::}"
-[[ -z $PRIVATE_KEY ]] && PRIVATE_KEY="${str%%:::*}"
-str="${str#*:::}"
-[[ -z $PSK ]] && PSK="${str%%:::*}"
-[[ -z $ADDRESS ]] && ADDRESS="${str#*:::}"
 
-[[ -z $ADDRESS ]] && ERREXIT "Bad Config."
+reconnect_init()
+{
+  [[ -z $RECONNECT ]] && return
 
-# If SERVER is AUTO or EMPTY then auto-select a server...
-[[ "${SERVER,,}" == "auto" ]] && unset SERVER
-[[ -z "${SERVER}" ]] && auto_select_server
-[[ -z ${SERVER} ]] && SLOWEXIT 249 "No Server found..."
-
-cf="/etc/wireguard/cs-${SERVER}.conf"
-
-[[ ! -f "${cf}" ]] && {
-  echo -e "Server '${SERVER}' not known."
-  cd /etc/wireguard
-  str="$(echo cs-*.conf)"
-  str="${str//cs-/}"
-  NODES="${str//\.conf/}"
-  echo -e "--> Try one of ${NODES}"
-  sleep 10
-  exit
+  echo "[$(date -Iseconds)] Reconnecting in ${RECONNECT} seconds..."
+  RE_EXPIRE=$(($(date +%s) + RECONNECT))
 }
 
-[[ -z $END_POINT ]] && {
-  str="$(grep ^Endpoint "${cf}")"
-  END_POINT="${str##* }"
-  [[ -z $END_POINT ]] && SLOWEXIT 250 "${cf}: No Endpoint found"
+# Return TRUE if it needs a reconnect
+need_reconnect()
+{
+  local n
+  [[ -z $RECONNECT ]] && return 255
+
+  [[ $(date +%s) -ge $RE_EXPIRE ]] && return 0
 }
 
-[[ -z $PUBLIC_KEY ]] && {
-  str="$(grep ^PublicKey "${cf}")"
-  PUBLIC_KEY="${str##* }"
-  [[ -z $PUBLIC_KEY ]] && SLOWEXIT 250 "${cf}: No PublicKey found"
+wg_finish()
+{
+  wg-quick down wg0 2>/dev/null
+  iptables -D OUTPUT -o eth0 -p udp -m udp -d "${EP_IP}" --dport "${EP_PORT}" -j ACCEPT
 }
 
-[[ $(sysctl net.ipv4.ip_forward -b) -ne 1 ]] && WARN "ip_forward= not set"
-[[ $(sysctl net.ipv4.conf.all.src_valid_mark -b) -ne 1 ]] && WARN "net.ipv4.conf.all.src_valid_mark= not set"
+wg_up()
+{
+  local cf
+  local id
+  sname="$2"
+  id="$3"
 
-# Allow WireGuard traffic to the endpoint. Alpine's 'host -4' still returns IPv6 as well..
+  if [[ "${sname,,}" == "auto" ]]; then
+    auto_select_server
+    [[ -z ${AUTO_SERVER} ]] && { WARN "No server found..."; return 255; }
+    sname="${AUTO_SERVER}"
+  fi
 
-[[ -z $EP_IP ]] && {
-  str=$(host -4 "${END_POINT%%\:*}" | grep -v IPv6)
-  EP_IP="${str##* }"
-  EP_PORT="${END_POINT##*\:}"
-}
-EP_PORT="${EP_PORT:-51820}"
-[[ -z $EP_IP ]] && SLOWEXIT 250 "EP_IP not set..."
-iptables -A OUTPUT -o eth0 -p udp -m udp -d "${EP_IP}" --dport "${EP_PORT}" -j ACCEPT
-# ip6tables -A OUTPUT -o eth0 -p udp -m udp --dport 51820 -j ACCEPT
+  cf="${1}/${sname}.conf"
 
-( umask 077 && { cat >/etc/wireguard/wg0.conf <<-EOF
+  [[ ! -f "${cf}" ]] && {
+    WARN "Server '${PROVIDER}/${sname}' not known."
+    return 255
+  }
+
+  [[ -z $END_POINT ]] && {
+    str="$(grep ^Endpoint "${cf}")"
+    END_POINT="${str##* }"
+    [[ -z $END_POINT ]] && { WARN "${cf}: No Endpoint found"; return 255; }
+  }
+
+  [[ -z $PUBLIC_KEY ]] && {
+    str="$(grep ^PublicKey "${cf}")"
+    PUBLIC_KEY="${str##* }"
+    [[ -z $PUBLIC_KEY ]] && { WARN "${cf}: No PublicKey found"; return 255; }
+  }
+
+  str="$(grep ^DNS "${cf}")"
+  WG_DNS="${str##* }"
+
+  # Allow WireGuard traffic to the endpoint.
+  [[ -z $EP_IP ]] && {
+    EP_IP="${END_POINT%%\:*}"
+    EP_PORT="${END_POINT##*\:}"
+  }
+  EP_PORT="${EP_PORT:-51820}"
+  [[ -z $EP_IP ]] && { echo "EP_IP not set..."; return 255; }
+  iptables -A OUTPUT -o eth0 -p udp -m udp -d "${EP_IP}" --dport "${EP_PORT}" -j ACCEPT
+
+  [[ -n $DNS ]] && WG_DNS="$DNS"
+
+  unset psk_str
+  [[ -n $PSK ]] && psk_str="Presharedkey = ${PSK}"
+
+  ( umask 077 && { cat >/etc/wireguard/wg0.conf <<-EOF
 [Interface]
 PrivateKey = ${PRIVATE_KEY}
 Address = ${ADDRESS}
-DNS = ${DNS:-1.1.1.1}
-Table = ${TABLE}
+DNS = ${WG_DNS}
 PreUp = ${PRE_UP}
 PostUp = ${POST_UP}
 PreDown = ${PRE_DOWN}
 PostDown = ${POST_DOWN}
 
 [Peer]
-Presharedkey = ${PSK}
+${psk_str}
 PublicKey = ${PUBLIC_KEY}
 Endpoint = ${EP_IP}:${EP_PORT}
 AllowedIPs = ${ALLOWED_IPS:-0.0.0.0/0}
 PersistentKeepalive = ${PERSISTENT_KEEP_ALIVE:-25}
 EOF
-} && sync )
+  } && sync )
 
-wg-quick up wg0
+  echo -e "[$(date -Iseconds)] Connecting to #${id}: ${CDM}${sname}${CN}..."
+  wg-quick up wg0 || { wg_finish; return 255; }
+
+  wait_for_handshake wg0 || { WARN "[${CDM}${sname}${CN}] VPN handshake failed"; wg_finish; return 255; }
+  # Monitor connection...
+  unset checked
+  while :; do
+    check_vpn "${PROVIDER}" || { WARN "[${CDM}${sname}${CN}] VPN check failed."; wg_finish; return 255; }
+    [[ -z $checked ]] && {
+      echo -e "[$(date -Iseconds)] [${CDM}${sname}${CN}] Connected! \(ᵔᵕᵔ)/"
+      reconnect_init
+      checked=1
+    }
+
+    need_reconnect && break
+    sleep 120
+  done
+
+  # HERE: Reconnect time expired => RECONNECT to next server.
+  wg_finish
+  return 0
+}
+
+[[ $(sysctl net.ipv4.ip_forward -b) -ne 1 ]] && WARN "ip_forward= not set"
+[[ $(sysctl net.ipv4.conf.all.src_valid_mark -b) -ne 1 ]] && WARN "net.ipv4.conf.all.src_valid_mark= not set"
+
+# Operate on Ramdisk
+[[ ! -d /dev/shm/wireguard ]] && mkdir /dev/shm/wireguard
+
+[[ -z $PROVIDER ]] && PROVIDER="cryptostorm"
+
+str="$CONFIG"
+[[ -z $SERVER ]] && SERVER="${str%%:::*}"
+str="${str#*:::}"
+[[ -z $PRIVATE_KEY ]] && PRIVATE_KEY="${str%%:::*}"
+str="${str#*:::}"
+[[ -z $PSK ]] && PSK="${str%%:::*}"
+[[ "${PSK,,}" == "none" ]] && unset PSK
+[[ -z $ADDRESS ]] && ADDRESS="${str#*:::}"
+
+[[ -z $ADDRESS ]] && ERREXIT "Bad Config."
+
+source /check_vpn.sh
+
 n=0
-while :; do
-  last=$(wg show wg0 latest-handshakes 2>/dev/null)
-  last="${last##*[[:space:]]}"
-  [[ $last -gt 0 ]] && break
-
-  ((n++))
-  [[ $n -gt 20 ]] && SLOWEXIT 0 "Timeout..."
-  sleep 0.5
+s="${SERVER%%+*}"
+while [[ -n $s ]]; do
+  servers+=("${s}")
+  n=$((n+${#s} + 1))
+  s="${SERVER:$n}"
 done
 
-echo "[$(date -Iseconds)] Connected! \(ᵔᵕᵔ)/"
-
-if [[ -n ${RECONNECT} ]]; then
-  echo "[$(date -Iseconds)] Reconnecting in ${RECONNECT} seconds"
-  re=$RECONNECT
-fi
-n=0
+# Pick a random server number to start with.
+id=0
+# [[ "${servers[0],,}" != "auto" ]] && id=$((RANDOM % ${#servers[@]}))
+err_count=0
 while :; do
-  last=$(wg show wg0 latest-handshakes 2>/dev/null)
-  last="${last##*[[:space:]]}"
-
-  [ -z "$last" ] && break
-
-  hs_age=$(( $(date -u +%s) - "${last}" ))
-  if [ $hs_age -le 180 ]; then
-    [ $n -gt 0 ] && echo "[$(date -Iseconds)] Re-Handshake complete!"
-    n=0
-  else
-    ((n++))
-    echo -e "[$(date -Iseconds)] Strike #${n}: No handshake for $hs_age sec..."
-    [ $n -gt 3 ] && break
-  fi
-  sleep 10
-  [[ -n $RECONNECT ]] && {
-    re=$((re - 10))
-    [ $re -le 0 ] && break
+  wg_up "/etc/wireguard-${PROVIDER}" "${servers[$id]}" "$id" && err_count=0 || {
+    ((err_count++))
+    [[ $err_count -ge ${#servers[@]} ]] && SLOWEXIT 10 "All servers have errors...(Total: ${#servers[@]})" #EXIT
+    sleep 1
   }
+
+  ((id++))
+  id=$((id%${#servers[@]}))
 done
 
-echo "[$(date -Iseconds)] RESTARTING..."
 sleep 5
+exit 255 # NOT REACHED
+

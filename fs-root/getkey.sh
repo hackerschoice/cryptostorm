@@ -32,13 +32,13 @@ ERREXIT()
 	exit "$code"
 }
 
-[[ -z ${CRYPTOSTORM_TOKEN} ]] && ERREXIT 255 "CRYPTOSTORM_TOKEN= not set"
+[[ -z ${TOKEN} ]] && ERREXIT 255 "TOKEN= not set"
 
 [[ -z $PRIVATE_KEY ]] && PRIVATE_KEY="$(wg genkey)"
 
 PUBLIC_KEY="$(echo "${PRIVATE_KEY}" | wg pubkey)"
 
-RES="$(curl -fsSL -X POST -F token="${CRYPTOSTORM_TOKEN}" -F mode=paid -F paid_pubkey="${PUBLIC_KEY}" https://cryptostorm.is/wireguard)"
+RES="$(curl -fsSL -X POST -F token="${TOKEN}" -F mode=paid -F paid_pubkey="${PUBLIC_KEY}" https://cryptostorm.is/wireguard)"
 echo "$RES" >/tmp/output.log # DEBUGGING
 
 grep "That token is limited to" /tmp/output.log >/dev/null && ERREXIT 250 "All tokens used. Check ${CB}${CUL}https://cryptostorm.is/wireguard_man${CN}"
@@ -62,7 +62,7 @@ NODES="${str//\.conf/}"
 echo -e "PRIVATE_KEY$=${PRIVATE_KEY}"
 echo -e "PSK$=${PSK}"
 echo -e "ADDRESS$=${MYIP}"
-echo -e "${CDC}CRYPTOSTORM_CONFIG${CN}=${CDG}auto:::${PRIVATE_KEY}:::${PSK}:::${MYIP}${CN}"
+echo -e "${CDC}CONFIG${CN}=${CDG}auto:::${PRIVATE_KEY}:::${PSK}:::${MYIP}${CN}"
 echo -e "--> The fastest server is picked automatically. Otherwise replace"
 echo -e "--> \`auto\` with \`iceland\` or any other server name."
 

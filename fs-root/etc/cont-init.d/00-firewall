@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/with-contenv bash
 
 iptables -P OUTPUT DROP
 iptables -P INPUT DROP
@@ -8,3 +8,16 @@ ip6tables -P INPUT DROP 2>/dev/null
 ip6tables -P FORWARD DROP 2>/dev/null
 
 echo "[$(date -Iseconds)] Firewall is up, everything has to go through the vpn"
+
+# [[ "${DNS,,}" == "host" ]] && {
+# 	gw="$(ip route | awk '/default/{print $3}')"
+# 	grep ^nameserver /etc/resolv.conf | while read str; do
+# 		n="${str##* }"
+# 		echo "--> Allowing DNS to ${n}"
+# 		iptables -A OUTPUT -o eth0 -p udp -d "${n}" --dport 53 -j MARK --set-mark 53
+# 		ip rule add fwmark 53 table 2053
+# 		ip route add default via "${gw}" table 2053
+# 	done
+# }
+# FIXME: Must add this before wg's rule (ip rule show) but by default
+# it's added after.
