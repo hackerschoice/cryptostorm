@@ -43,7 +43,7 @@ hn2ip()
 auto_nordvpn()
 {
   iptables -A OUTPUT -o eth0 -p tcp --dport 443 -j ACCEPT
-  recommendations=$(curl --max-time 15 --retry 3 --fail -LsS "https://api.nordvpn.com/v1/servers/recommendations?&filters\[servers_technologies\]\[identifier\]=wireguard_udp&limit=1&${QUERY}")
+  recommendations=$(curl --max-time 15 --retry 3 -fsSL "https://api.nordvpn.com/v1/servers/recommendations?&filters\[servers_technologies\]\[identifier\]=wireguard_udp&limit=1&${QUERY}")
   iptables -D OUTPUT -o eth0 -p tcp --dport 443 -j ACCEPT
   server=$(echo "${recommendations}" | jq -r '.[0] | del(.services, .technologies)')
   [[ -z ${server} ]] && return
