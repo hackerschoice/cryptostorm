@@ -20,6 +20,33 @@ WARN()
   echo -e "[${CY}WARN${CN}] $*"
 }
 
+hn2ip()
+{
+  local str
+  str="$1"
+
+  # Already an IP
+  [[ $str =~ ^[0-9] ]] && { echo "$str"; return; }
+
+  str=$(host -4 "${str}" | grep -v IPv6 | head -n1)
+  [[ ! $str =~ ^[0-9] ]] && return
+  echo "${str##* }"
+}
+
+auto_nordvpn()
+{
+  iptables -A OUTPUT -o eth0 -p tcp --dport 443 -j ACCEPT
+  recommendations=$(curl --max-time 15 --retry 3 -LsS "https://api.nordvpn.com/v1/servers/recommendations?&filters\[servers_technologies\]\[identifier\]=wireguard_udp&limit=1&${QUERY}")
+  iptables -D OUTPUT -o eth0 -p tcp --dport 443 -j ACCEPT
+  server=$(echo "${recommendations}" | jq -r '.[0] | del(.services, .technologies)')
+  [[ -z ${server} ]] && return
+  [[ -z ${PUBLIC_KEY} ]] && PUBLIC_KEY=$(echo "${recommendations}" | jq -r '.[0].technologies[] | select( .identifier == "wireguard_udp" ) | .metadata[] | select( .name == "public_key" ) | .value')
+  [[ -z ${END_POINT} ]] && END_POINT=$(echo "${recommendations}" | jq -r '.[0].hostname'):51820
+  [[ -z ${EP_IP} ]] && EP_IP=$(echo "${recommendations}" | jq -r '.[0].station')
+  [[ -z ${ADDRESS} ]] && ADDRESS="10.5.0.2/32"
+  AUTO_SERVER=$(echo "${recommendations}" | jq -r '.[0].hostname')
+  EP_PORT="51820"
+}
 
 # auto_select_server <position>
 #   Select the nearest server. Position can 0, 1, 2, .. for
@@ -42,6 +69,8 @@ auto_select_server()
   unset SERVER
   unset EP_IP
   unset EP_PORT
+
+  [[ "${PROVIDER}" == "nordvpn" ]] && { auto_nordvpn; return; }
 
   pos="$1"
   [[ -z $pos ]] && pos=0
@@ -131,15 +160,9 @@ auto_select_server()
   [[ -n ${ports[$n]} ]] && END_POINT+=":${ports[$n]}"
 
   # Translate to IP address if it isnt already
-  str="${hosts[$n]}"
-  [[ ! $str =~ ^[0-9] ]] && {
-    str=$(host -4 "${str}" | grep -v IPv6 | head -n1)
-    [[ ! $str =~ ^[0-9] ]] && return
-  }
-  EP_IP="${str##* }"
+  EP_IP=$(hn2ip "${hosts[$n]}")
   EP_PORT="${END_POINT##*\:}"
   EP_PORT="${EP_PORT:-51820}"
-  echo -e "[+] Using ${CDM}${AUTO_SERVER}${CN} (${EP_IP}:${EP_PORT})"
 }
 
 
@@ -175,45 +198,58 @@ wg_up()
 
   if [[ "${sname,,}" == "auto" ]]; then
     auto_select_server
-    [[ -z ${AUTO_SERVER} ]] && { WARN "No server found..."; return 255; }
+    [[ -z ${AUTO_SERVER} ]] && { WARN "No server found ¯\_(⊙︿⊙)_/¯."; return 255; }
     sname="${AUTO_SERVER}"
+    echo -e "[+] Using ${CDM}${AUTO_SERVER}${CN} (${EP_IP}:${EP_PORT})"
   fi
 
-  cf="${1}/${sname}.conf"
+  if [[ "${PROVIDER}" != "nordvpn" ]]; then
+    # HERE: Cryptostorm/Mullvad from templates
+    cf="${1}/${sname}.conf"
 
-  [[ ! -f "${cf}" ]] && {
-    WARN "Server '${PROVIDER}/${sname}' not known."
-    return 255
-  }
+    [[ ! -f "${cf}" ]] && {
+      WARN "Server '${PROVIDER}/${sname}' not known ¯\_(⊙︿⊙)_/¯."
+      return 255
+    }
+    [[ -z $END_POINT ]] && {
+      str="$(grep ^Endpoint "${cf}")"
+      END_POINT="${str##* }"
+    }
 
-  [[ -z $END_POINT ]] && {
-    str="$(grep ^Endpoint "${cf}")"
-    END_POINT="${str##* }"
-    [[ -z $END_POINT ]] && { WARN "${cf}: No Endpoint found"; return 255; }
-  }
+    [[ -z $PUBLIC_KEY ]] && {
+      str="$(grep ^PublicKey "${cf}")"
+      PUBLIC_KEY="${str##* }"
+    }
 
-  [[ -z $PUBLIC_KEY ]] && {
-    str="$(grep ^PublicKey "${cf}")"
-    PUBLIC_KEY="${str##* }"
-    [[ -z $PUBLIC_KEY ]] && { WARN "${cf}: No PublicKey found"; return 255; }
-  }
+    [[ -z $EP_IP ]] && {
+      EP_IP="$(hn2ip "${END_POINT%%\:*}")"
+      EP_PORT="${END_POINT##*\:}"
+    }
 
-  str="$(grep ^DNS "${cf}")"
-  WG_DNS="${str##* }"
+    WG_DNS="$(grep ^DNS "${cf}")"
+    WG_DNS="${WG_DNS##* }"
+  else
+    # NordVPN's DNS servers
+    WG_DNS="103.86.96.100,103.86.99.100"
+  fi
+
+  # Use default if no DNS supplied in Templates.
+  [[ -z $WG_DNS ]] && WG_DNS="1.1.1.1"
+
+  EP_PORT="${EP_PORT:-51820}"
+
+  [[ -z $END_POINT ]] && { WARN "${cf}: No Endpoint found ¯\_(⊙︿⊙)_/¯."; return 255; }
+  [[ -z $PUBLIC_KEY ]] && { WARN "${cf}: No PublicKey found ¯\_(⊙︿⊙)_/¯."; return 255; }
+  [[ -z $EP_IP ]] && { echo "EP_IP not set ¯\_(⊙︿⊙)_/¯."; return 255; }
 
   # Allow WireGuard traffic to the endpoint.
-  [[ -z $EP_IP ]] && {
-    EP_IP="${END_POINT%%\:*}"
-    EP_PORT="${END_POINT##*\:}"
-  }
-  EP_PORT="${EP_PORT:-51820}"
-  [[ -z $EP_IP ]] && { echo "EP_IP not set..."; return 255; }
   iptables -A OUTPUT -o eth0 -p udp -m udp -d "${EP_IP}" --dport "${EP_PORT}" -j ACCEPT
 
+  # Force user supplied DNS (if specified)
   [[ -n $DNS ]] && WG_DNS="$DNS"
 
   unset psk_str
-  [[ -n $PSK ]] && psk_str="Presharedkey = ${PSK}"
+  [[ -n $PSK ]] && psk_str="Presharedkey = ${PSK}"$'\n'
 
   ( umask 077 && { cat >/etc/wireguard/wg0.conf <<-EOF
 [Interface]
@@ -226,7 +262,7 @@ PreDown = ${PRE_DOWN}
 PostDown = ${POST_DOWN}
 
 [Peer]
-${psk_str}
+${psk_str}\
 PublicKey = ${PUBLIC_KEY}
 Endpoint = ${EP_IP}:${EP_PORT}
 AllowedIPs = ${ALLOWED_IPS:-0.0.0.0/0}
@@ -263,20 +299,28 @@ EOF
 # Operate on Ramdisk
 [[ ! -d /dev/shm/wireguard ]] && mkdir /dev/shm/wireguard
 
+PROVIDER="${PROVIDER,,}"
 [[ -z $PROVIDER ]] && PROVIDER="cryptostorm"
 
-str="$CONFIG"
-[[ -z $SERVER ]] && SERVER="${str%%:::*}"
-str="${str#*:::}"
-[[ -z $PRIVATE_KEY ]] && PRIVATE_KEY="${str%%:::*}"
-str="${str#*:::}"
-[[ -z $PSK ]] && PSK="${str%%:::*}"
+[[ -n $CONFIG ]] && {
+  str="$CONFIG"
+  [[ -z $SERVER ]] && SERVER="${str%%:::*}"
+  str="${str#*:::}"
+  [[ -z $PRIVATE_KEY ]] && PRIVATE_KEY="${str%%:::*}"
+  str="${str#*:::}"
+  [[ -z $PSK ]] && PSK="${str%%:::*}"
+  [[ -z $ADDRESS ]] && ADDRESS="${str#*:::}"
+}
+
 [[ "${PSK,,}" == "none" ]] && unset PSK
-[[ -z $ADDRESS ]] && ADDRESS="${str#*:::}"
+[[ "${ADDRESS,,}" == "none" ]] && unset ADDRESS
+[[ -z $SERVER ]] && SERVER="auto"
+[[ -z $PRIVATE_KEY ]] && SLOWEXIT 10 "PRIVATE_KEY= not set ¯\_(⊙︿⊙)_/¯."
 
-[[ -z $ADDRESS ]] && ERREXIT "Bad Config."
-
-source /check_vpn.sh
+if [[ "${PROVIDER}" != "nordvpn" ]]; then
+  # NordVPN does not need ADDRESS. All others do.
+  [[ -z $ADDRESS ]] && SLOWEXIT 10 "ADDRESS is not."
+fi
 
 n=0
 s="${SERVER%%+*}"
@@ -285,6 +329,7 @@ while [[ -n $s ]]; do
   n=$((n+${#s} + 1))
   s="${SERVER:$n}"
 done
+source /check_vpn.sh
 
 # Pick a random server number to start with.
 id=0

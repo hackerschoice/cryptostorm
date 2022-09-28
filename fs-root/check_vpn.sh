@@ -44,15 +44,17 @@ check_vpn()
 	sleep_timer=1
 
 	while :; do
-		if [[ "${provider}" == "mullvad" ]]; then
-			[[ "$(curl -SsfL --max-time 5 https://am.i.mullvad.net/connected)" == *"are connected"* ]] && return 0
-		elif [[ "${provider}" == "cryptostorm" ]]; then
-			[[ "$(curl -SsfL --max-time 5 https://cryptostorm.is/test.cgi)" == *"IS cryptostorm"* ]] && return 0
-		else
-			# echo >&2 "WARNING: Provider check '${provider}' not known"
-			return 0
-		fi
-
+		# if [[ "${provider}" == "mullvad" ]]; then
+		# 	[[ "$(curl -SsfL --max-time 5 https://am.i.mullvad.net/connected)" == *"are connected"* ]] && return 0
+		# elif [[ "${provider}" == "cryptostorm" ]]; then
+		# 	[[ "$(curl -SsfL --max-time 5 https://cryptostorm.is/test.cgi)" == *"IS cryptostorm"* ]] && return 0
+		# else
+		# 	# echo >&2 "WARNING: Provider check '${provider}' not known"
+		# 	# Exit with error if a single packet is missed.
+		# 	ping -4 -c 5 -i 1 -W 2 -w 5 -A -q 1.1.1.1 >/dev/null && return 0
+		# fi
+		ping -4 -c 5 -i 1 -W 2 -w 5 -A -q 1.1.1.1 >/dev/null && return 0
+		
 		((err++))
 		[[ $err -ge 3 ]] && return 255
 		echo "[$(date -Iseconds)] VPN check failed. Strike #${err}."
