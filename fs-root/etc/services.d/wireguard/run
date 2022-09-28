@@ -2,6 +2,7 @@
 
 CY="\e[1;33m" # yellow
 CDM="\e[0;35m" # magenta
+CDR="\e[0;31m" # red
 CN="\e[0m"    # none
 
 SLOWEXIT()
@@ -10,7 +11,7 @@ SLOWEXIT()
   code="$1"
 
   shift 1
-  echo -e "[${CY}ERROR${CN}] $*"
+  echo -e "[${CDR}ERROR${CN}] $*"
   sleep 10
   exit "$code"
 }
@@ -18,6 +19,11 @@ SLOWEXIT()
 WARN()
 {
   echo -e "[${CY}WARN${CN}] $*"
+}
+
+ERR()
+{
+  echo -e "[${CDR}WARN${CN}] $*"
 }
 
 hn2ip()
@@ -46,7 +52,6 @@ auto_nordvpn()
   [[ -z ${EP_IP} ]] && EP_IP=$(echo "${recommendations}" | jq -r '.[0].station')
   [[ -z ${ADDRESS} ]] && ADDRESS="10.5.0.2/32"
   AUTO_SERVER=$(echo "${recommendations}" | jq -r '.[0].hostname')
-  EP_PORT="51820"
 }
 
 # auto_select_server <position>
@@ -67,9 +72,6 @@ auto_select_server()
   local ports
 
   echo "[+] Finding fastest server...."
-  unset SERVER
-  unset EP_IP
-  unset EP_PORT
 
   [[ "${PROVIDER}" == "nordvpn" ]] && { auto_nordvpn; return; }
 
@@ -162,8 +164,7 @@ auto_select_server()
 
   # Translate to IP address if it isnt already
   EP_IP=$(hn2ip "${hosts[$n]}")
-  EP_PORT="${END_POINT##*\:}"
-  EP_PORT="${EP_PORT:-51820}"
+  WG_EP_PORT="${END_POINT##*\:}"
 }
 
 
@@ -187,7 +188,7 @@ need_reconnect()
 wg_finish()
 {
   wg-quick down wg0 2>/dev/null
-  iptables -D OUTPUT -o eth0 -p udp -m udp -d "${EP_IP}" --dport "${EP_PORT}" -j ACCEPT
+  iptables -D OUTPUT -o eth0 -p udp -m udp -d "${EP_IP}" --dport "${WG_EP_PORT}" -j ACCEPT
 }
 
 wg_up()
@@ -197,11 +198,16 @@ wg_up()
   sname="$2"
   id="$3"
 
+  unset WG_EP_PORT
+  unset WG_DNS
+  unset END_POINT
+  unset EP_IP
+  unset PUBLIC_KEY
+
   if [[ "${sname,,}" == "auto" ]]; then
     auto_select_server
     [[ -z ${AUTO_SERVER} ]] && { WARN "No server found ¯\_(⊙︿⊙)_/¯."; return 255; }
     sname="${AUTO_SERVER}"
-    echo -e "[+] Using ${CDM}${AUTO_SERVER}${CN} (${EP_IP}:${EP_PORT})"
   fi
 
   if [[ "${PROVIDER}" != "nordvpn" ]]; then
@@ -209,7 +215,7 @@ wg_up()
     cf="${1}/${sname}.conf"
 
     [[ ! -f "${cf}" ]] && {
-      WARN "Server '${PROVIDER}/${sname}' not known ¯\_(⊙︿⊙)_/¯."
+      ERR "Server '${PROVIDER}/${sname}' not known ¯\_(⊙︿⊙)_/¯."
       return 255
     }
     [[ -z $END_POINT ]] && {
@@ -222,10 +228,8 @@ wg_up()
       PUBLIC_KEY="${str##* }"
     }
 
-    [[ -z $EP_IP ]] && {
-      EP_IP="$(hn2ip "${END_POINT%%\:*}")"
-      EP_PORT="${END_POINT##*\:}"
-    }
+    [[ -z $EP_IP ]] && EP_IP="$(hn2ip "${END_POINT%%\:*}")"
+    WG_EP_PORT="${END_POINT##*\:}"
 
     WG_DNS="$(grep ^DNS "${cf}")"
     WG_DNS="${WG_DNS##* }"
@@ -237,14 +241,15 @@ wg_up()
   # Use default if no DNS supplied in Templates.
   [[ -z $WG_DNS ]] && WG_DNS="1.1.1.1"
 
-  EP_PORT="${EP_PORT:-51820}"
+  [[ -n $EP_PORT ]] && WG_EP_PORT="${EP_PORT}"
+  WG_EP_PORT="${WG_EP_PORT:-51820}"
 
-  [[ -z $END_POINT ]] && { WARN "${cf}: No Endpoint found ¯\_(⊙︿⊙)_/¯."; return 255; }
-  [[ -z $PUBLIC_KEY ]] && { WARN "${cf}: No PublicKey found ¯\_(⊙︿⊙)_/¯."; return 255; }
-  [[ -z $EP_IP ]] && { echo "EP_IP not set ¯\_(⊙︿⊙)_/¯."; return 255; }
+  [[ -z $END_POINT ]] && { WARN "${sname}: No Endpoint found ¯\_(⊙︿⊙)_/¯."; return 255; }
+  [[ -z $PUBLIC_KEY ]] && { WARN "${sname}: No PublicKey found ¯\_(⊙︿⊙)_/¯."; return 255; }
+  [[ -z $EP_IP ]] && { WARN "${sname}: EP_IP not set ¯\_(⊙︿⊙)_/¯."; return 255; }
 
   # Allow WireGuard traffic to the endpoint.
-  iptables -A OUTPUT -o eth0 -p udp -m udp -d "${EP_IP}" --dport "${EP_PORT}" -j ACCEPT
+  iptables -A OUTPUT -o eth0 -p udp -m udp -d "${EP_IP}" --dport "${WG_EP_PORT}" -j ACCEPT
 
   # Force user supplied DNS (if specified)
   [[ -n $DNS ]] && WG_DNS="$DNS"
@@ -265,13 +270,13 @@ PostDown = ${POST_DOWN}
 [Peer]
 ${psk_str}\
 PublicKey = ${PUBLIC_KEY}
-Endpoint = ${EP_IP}:${EP_PORT}
+Endpoint = ${EP_IP}:${WG_EP_PORT}
 AllowedIPs = ${ALLOWED_IPS:-0.0.0.0/0}
 PersistentKeepalive = ${PERSISTENT_KEEP_ALIVE:-25}
 EOF
   } && sync )
 
-  echo -e "[$(date -Iseconds)] Connecting to #${id}: ${CDM}${sname}${CN}..."
+  echo -e "[$(date -Iseconds)] Connecting to #${id}: ${CDM}${sname}${CN} (${EP_IP}:${WG_EP_PORT})..."
   wg-quick up wg0 || { wg_finish; return 255; }
 
   wait_for_handshake wg0 || { WARN "[${CDM}${sname}${CN}] VPN handshake failed"; wg_finish; return 255; }
@@ -324,12 +329,14 @@ if [[ "${PROVIDER}" != "nordvpn" ]]; then
 fi
 
 n=0
-s="${SERVER%%+*}"
-while [[ -n $s ]]; do
-  servers+=("${s}")
-  n=$((n+${#s} + 1))
-  s="${SERVER:$n}"
+unset servers
+s="${SERVER}"
+while :; do
+  servers+=("${s%%+*}")
+  [[ "${s}" != *"+"* ]] && break
+  s="${s#*+}"
 done
+
 source /check_vpn.sh
 
 # Pick a random server number to start with.
