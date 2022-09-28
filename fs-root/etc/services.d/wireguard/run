@@ -29,8 +29,9 @@ hn2ip()
   [[ $str =~ ^[0-9] ]] && { echo "$str"; return; }
 
   str=$(host -4 "${str}" | grep -v IPv6 | head -n1)
+  str="${str##* }"
   [[ ! $str =~ ^[0-9] ]] && return
-  echo "${str##* }"
+  echo "${str}"
 }
 
 auto_nordvpn()
