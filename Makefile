@@ -1,11 +1,10 @@
-VER := 1.1a
+VER := 1.2a
 
 FILES += "cryptostorm-$(VER)/Makefile"
 FILES += "cryptostorm-$(VER)/setup.sh"
 FILES += "cryptostorm-$(VER)/Dockerfile"
 FILES += "cryptostorm-$(VER)/fs-root/getkey.sh"
 FILES += "cryptostorm-$(VER)/fs-root/check_vpn.sh"
-FILES += "cryptostorm-$(VER)/fs-root/etc/wireguard-mullvad"
 FILES += "cryptostorm-$(VER)/fs-root/etc/cont-init.d"
 FILES += "cryptostorm-$(VER)/fs-root/etc/services.d/wireguard"
 

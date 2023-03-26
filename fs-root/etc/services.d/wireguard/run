@@ -1,5 +1,7 @@
 #!/usr/bin/with-contenv bash
 
+[[ -z $CONFIG ]] && exit 0
+
 CY="\e[1;33m" # yellow
 CDM="\e[0;35m" # magenta
 CDR="\e[0;31m" # red
@@ -51,6 +53,24 @@ auto_nordvpn()
   [[ -z ${END_POINT} ]] && END_POINT=$(echo "${recommendations}" | jq -r '.[0].hostname'):51820
   [[ -z ${EP_IP} ]] && EP_IP=$(echo "${recommendations}" | jq -r '.[0].station')
   [[ -z ${ADDRESS} ]] && ADDRESS="10.5.0.2/32"
+  local city
+  local country
+  city=$(echo "${recommendations}" | jq -r '.[0].locations[0].country.city.name')
+  country=$(echo "${recommendations}" | jq -r '.[0].locations[0].country.name')
+
+  # Seattle, WA => Seattle
+  city="${city%%,*}"
+
+  # Singapore/Singapore => Singapore
+  # Hong Kong/Hong Kong => Hong Kong
+  [[ "$country" == "$city" ]] && unset city
+
+  unset GEOIP
+  [[ -n $city ]] && GEOIP="${city}/"
+  GEOIP+="${country}"
+  # Sanitize
+  GEOIP="${GEOIP//[^[:alnum:].-_ \/]}"
+  
   AUTO_SERVER=$(echo "${recommendations}" | jq -r '.[0].hostname')
 }
 
@@ -73,7 +93,7 @@ auto_select_server()
 
   echo "[+] Finding fastest server...."
 
-  [[ "${PROVIDER}" == "nordvpn" ]] && { auto_nordvpn; return; }
+  [[ "${PROV}" == "nordvpn" ]] && { auto_nordvpn; return; }
 
   pos="$1"
   [[ -z $pos ]] && pos=0
@@ -82,11 +102,11 @@ auto_select_server()
   # Better read END_POINT from the config file...
   local h
   local p
-  for cf in $(cd "/etc/wireguard-${PROVIDER}"; echo *.conf); do
+  for cf in $(cd "/etc/wireguard-${PROV}"; echo *.conf); do
     name="${cf//\.conf/}"
     [[ -z $name ]] && continue
 
-    str="$(grep ^Endpoint "/etc/wireguard-${PROVIDER}/${cf}")"
+    str="$(grep ^Endpoint "/etc/wireguard-${PROV}/${cf}")"
     str="${str##* }"
     p="${str##*\:}"
     h="${str%%\:*}"
@@ -168,6 +188,34 @@ auto_select_server()
 }
 
 
+MV_JSON_FILE="/etc/wireguard-mullvad/mullvad.json"
+# Set AUTO_SERVER to the server we selected.
+mullvad_select()
+{
+  local search
+  local city
+  search="$1"
+
+  unset AUTO_SERVER
+
+  # Check if it is a direct match
+  AUTO_SERVER=$(jq -r '.countries[].cities[].relays[] | select(.hostname == "'"$search"'") | .hostname' "${MV_JSON_FILE}")
+  [[ ! -z $AUTO_SERVER ]] && return 0
+
+  # First try to see if 'search' matches COUNTRY. Otherwise try matching 'search' with CITY.
+  # Pick a random city by country
+  city=$(jq -r '.countries[] | select(.name | match("^'"$search"'"; "i")) | .cities[].name'  "${MV_JSON_FILE}" | shuf -n1)
+  if [[ -z $city ]]; then
+    # No match. Try picking a city by City.
+    city=$(jq -r '.countries[].cities[] | select(.name | match("^'"$search"'"; "i")) | .name'  "${MV_JSON_FILE}" | shuf -n1)
+  fi
+
+  [[ ! -z $city ]] && AUTO_SERVER=$(jq -r '.countries[].cities[] | select(.name == "'"${city}"'") | .relays[].hostname'  "${MV_JSON_FILE}" | shuf -n1)
+  [[ ! -z $AUTO_SERVER ]] && return 0
+
+  return 255
+}
+
 reconnect_init()
 {
   [[ -z $RECONNECT ]] && return
@@ -203,6 +251,7 @@ wg_up()
   unset END_POINT
   unset EP_IP
   unset PUBLIC_KEY
+  unset GEOIP
 
   if [[ "${sname,,}" == "auto" ]]; then
     auto_select_server
@@ -210,7 +259,14 @@ wg_up()
     sname="${AUTO_SERVER}"
   fi
 
-  if [[ "${PROVIDER}" != "nordvpn" ]]; then
+  if [[ "${PROV}" != "nordvpn" ]]; then
+    if [[ "${PROV}" == "mullvad" ]]; then
+      # Mullvad supports regex. Find sname by regex over city
+      mullvad_select "${sname,,}"
+      [[ -z ${AUTO_SERVER} ]] && { WARN "No server found ¯\_(⊙︿⊙)_/¯."; return 255; }
+      sname="${AUTO_SERVER}"
+    fi
+
     # HERE: Cryptostorm/Mullvad from templates
     cf="${1}/${sname}.conf"
 
@@ -229,7 +285,12 @@ wg_up()
     }
 
     [[ -z $EP_IP ]] && EP_IP="$(hn2ip "${END_POINT%%\:*}")"
-    WG_EP_PORT="${END_POINT##*\:}"
+    [[ ${END_POINT} == *:* ]] && WG_EP_PORT="${END_POINT##*\:}"
+
+    [[ -z $GEOIP ]] && {
+      str=$(grep '# GEOIP=' "${cf}")
+      GEOIP="${str:8}"
+    }
 
     WG_DNS="$(grep ^DNS "${cf}")"
     WG_DNS="${WG_DNS##* }"
@@ -237,6 +298,8 @@ wg_up()
     # NordVPN's DNS servers
     WG_DNS="103.86.96.100,103.86.99.100"
   fi
+
+  # HERE: NordVPN, Mullvad, CryptoStorm
 
   # Use default if no DNS supplied in Templates.
   [[ -z $WG_DNS ]] && WG_DNS="1.1.1.1"
@@ -273,6 +336,7 @@ PublicKey = ${PUBLIC_KEY}
 Endpoint = ${EP_IP}:${WG_EP_PORT}
 AllowedIPs = ${ALLOWED_IPS:-0.0.0.0/0}
 PersistentKeepalive = ${PERSISTENT_KEEP_ALIVE:-25}
+# GEOIP=${GEOIP}
 EOF
   } && sync )
 
@@ -283,7 +347,7 @@ EOF
   # Monitor connection...
   unset checked
   while :; do
-    check_vpn "${PROVIDER}" || { WARN "[${CDM}${sname}${CN}] VPN check failed."; wg_finish; return 255; }
+    check_vpn "${PROVIDER}" wg0 || { WARN "[${CDM}${sname}${CN}] VPN check failed."; wg_finish; return 255; }
     [[ -z $checked ]] && {
       echo -e "[$(date -Iseconds)] [${CDM}${sname}${CN}] Connected! \(ᵔᵕᵔ)/"
       reconnect_init
@@ -305,8 +369,8 @@ EOF
 # Operate on Ramdisk
 [[ ! -d /dev/shm/wireguard ]] && mkdir /dev/shm/wireguard
 
-PROVIDER="${PROVIDER,,}"
-[[ -z $PROVIDER ]] && PROVIDER="cryptostorm"
+[[ -z $PROVIDER ]] && PROVIDER="CryptoStorm"
+PROV="${PROVIDER,,}"
 
 [[ -n $CONFIG ]] && {
   str="$CONFIG"
@@ -323,7 +387,7 @@ PROVIDER="${PROVIDER,,}"
 [[ -z $SERVER ]] && SERVER="auto"
 [[ -z $PRIVATE_KEY ]] && SLOWEXIT 10 "PRIVATE_KEY= not set ¯\_(⊙︿⊙)_/¯."
 
-if [[ "${PROVIDER}" != "nordvpn" ]]; then
+if [[ "${PROV}" != "nordvpn" ]]; then
   # NordVPN does not need ADDRESS. All others do.
   [[ -z $ADDRESS ]] && SLOWEXIT 10 "ADDRESS is not."
 fi
@@ -344,9 +408,9 @@ id=0
 # [[ "${servers[0],,}" != "auto" ]] && id=$((RANDOM % ${#servers[@]}))
 err_count=0
 while :; do
-  wg_up "/etc/wireguard-${PROVIDER}" "${servers[$id]}" "$id" && err_count=0 || {
+  wg_up "/etc/wireguard-${PROV}" "${servers[$id]}" "$id" && err_count=0 || {
     ((err_count++))
-    [[ $err_count -ge ${#servers[@]} ]] && SLOWEXIT 10 "All servers have errors...(Total: ${#servers[@]})" #EXIT
+    [[ $err_count -ge ${#servers[@]} ]] && SLOWEXIT 30 "All servers have errors...(Total: ${#servers[@]})" #EXIT
     sleep 1
   }
 

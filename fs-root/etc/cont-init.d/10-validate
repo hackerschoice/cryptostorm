@@ -33,7 +33,8 @@ Either set CONFIG= or set PRIVATE_KEY=\n\
     echo -e "Either set CONFIG= or set ADDRESS=,PRIVATE_KEY= and SERVER="
   fi
 
-  sleep infinity
+  halt # damn s6-overlay. 'halt' only shuts down after entire bootup sequence completes. No way to shut down immediately.
+  exit 0
 }
 
 ip link del dev test 2>/dev/null

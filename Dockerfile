@@ -8,6 +8,6 @@ HEALTHCHECK CMD [ $(( $(wg show wg0 latest-handshakes 2>/dev/null | awk '{print 
 
 COPY /fs-root /
 COPY /setup.sh /
-RUN apk add --no-cache -U wireguard-tools bind-tools fping curl jq \
+RUN apk add --no-cache -U wireguard-tools bind-tools conntrack-tools fping curl jq redis \
 	&& bash /setup.sh \
  	&& rm -rf /tmp/*

@@ -1,16 +1,5 @@
 
 
-ipbydev()
-{
-	local _ip
-	_ip="$(ip addr show "${1}")"
-	_ip="${_ip#*inet }"
-	_ip="${_ip%%/*}"
-	[[ -n $_ip ]] && { echo "$_ip"; return; }
-	echo -e >&2 "IP for dev '${1}' not found. Using $2"
-	echo "${2:?}"
-}
-
 # Wait 10 seconds for handshake to complete
 wait_for_handshake()
 {
@@ -36,12 +25,20 @@ wait_for_handshake()
 # check_vpn [mullvad/cryptostorm]
 check_vpn()
 {
-	local provider
-	provider="$1"
+	# local provider
+	# provider="${1,,}"
 	local n
+	local dev
 	err=0
 	local sleep_timer
-	sleep_timer=1
+	sleep_timer=5
+	dev="${2:-wg0}"
+
+	# can happen if admin issued 'wg-quick down wg0'
+	wg show "$dev" >/dev/null 2>/dev/null || {
+		echo "[$(date -Iseconds)] VPN check failed ('$dev' does not exists)."
+		return 255
+	}
 
 	while :; do
 		# if [[ "${provider}" == "mullvad" ]]; then
@@ -53,11 +50,11 @@ check_vpn()
 		# 	# Exit with error if a single packet is missed.
 		# 	ping -4 -c 5 -i 1 -W 2 -w 5 -A -q 1.1.1.1 >/dev/null && return 0
 		# fi
-		ping -4 -c 5 -i 1 -W 2 -w 5 -A -q 1.1.1.1 >/dev/null && return 0
+		ping -4 -c 5 -i 1 -W 2 -w 5 -A -q 1.1.1.1 >/dev/null 2>/dev/null && return 0
 		
 		((err++))
-		[[ $err -ge 3 ]] && return 255
 		echo "[$(date -Iseconds)] VPN check failed. Strike #${err}."
+		[[ $err -gt 3 ]] && return 255
 		sleep $sleep_timer
 		sleep_timer=15
 	done
