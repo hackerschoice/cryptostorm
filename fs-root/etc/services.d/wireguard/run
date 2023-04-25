@@ -1,6 +1,8 @@
 #!/usr/bin/with-contenv bash
 
-[[ -z $CONFIG ]] && exit 0
+# Exit without warning if no config is set. The user
+# decided not to use this VPN (it's not set in .env)
+[[ -z $PRIVATE_KEY ]] && [[ -z $CONFIG ]] && exit 0
 
 CY="\e[1;33m" # yellow
 CDM="\e[0;35m" # magenta
@@ -95,8 +97,9 @@ auto_select_server()
 
   [[ "${PROV}" == "nordvpn" ]] && { auto_nordvpn; return; }
 
-  pos="$1"
-  [[ -z $pos ]] && pos=0
+  # pos="$1"
+  # [[ -z $pos ]] && pos=0
+  pos=0
 
   # At the moment END_POINT are all <name>.cstorm.is but this may change...
   # Better read END_POINT from the config file...
@@ -243,6 +246,8 @@ wg_up()
 {
   local cf
   local id
+  local dir
+  dir="$1"
   sname="$2"
   id="$3"
 
@@ -268,7 +273,7 @@ wg_up()
     fi
 
     # HERE: Cryptostorm/Mullvad from templates
-    cf="${1}/${sname}.conf"
+    cf="${dir}/${sname}.conf"
 
     [[ ! -f "${cf}" ]] && {
       ERR "Server '${PROVIDER}/${sname}' not known ¯\_(⊙︿⊙)_/¯."
@@ -408,7 +413,7 @@ id=0
 # [[ "${servers[0],,}" != "auto" ]] && id=$((RANDOM % ${#servers[@]}))
 err_count=0
 while :; do
-  wg_up "/etc/wireguard-${PROV}" "${servers[$id]}" "$id" && err_count=0 || {
+  { wg_up "/etc/wireguard-${PROV}" "${servers[$id]}" "$id" && err_count=0; } || {
     ((err_count++))
     [[ $err_count -ge ${#servers[@]} ]] && SLOWEXIT 30 "All servers have errors...(Total: ${#servers[@]})" #EXIT
     sleep 1
