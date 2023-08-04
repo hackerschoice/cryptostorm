@@ -375,8 +375,8 @@ EOF
   return 0
 }
 
-[[ $(sysctl net.ipv4.ip_forward -b) -ne 1 ]] && WARN "ip_forward= not set"
-[[ $(sysctl net.ipv4.conf.all.src_valid_mark -b) -ne 1 ]] && WARN "net.ipv4.conf.all.src_valid_mark= not set"
+[[ $(sysctl -n net.ipv4.ip_forward) -ne 1 ]] && WARN "ip_forward= not set"
+[[ $(sysctl -n net.ipv4.conf.all.src_valid_mark) -ne 1 ]] && WARN "net.ipv4.conf.all.src_valid_mark= not set"
 
 # Operate on Ramdisk
 [[ ! -d /dev/shm/wireguard ]] && mkdir /dev/shm/wireguard
