@@ -44,10 +44,15 @@ hn2ip()
   echo "${str}"
 }
 
-auto_nordvpn()
+# Create NordVPN list of country ID's.
+# curl --silent "https://api.nordvpn.com/v1/servers/countries" | jq --raw-output '.[] | [.id, .name] | @tsv'
+nordvpn_select()
 {
+  local search
+  search="$1"
+
   iptables -A OUTPUT -o eth0 -p tcp --dport 443 -j ACCEPT
-  recommendations=$(curl --max-time 15 --retry 3 -fsSL "https://api.nordvpn.com/v1/servers/recommendations?&filters\[servers_technologies\]\[identifier\]=wireguard_udp&limit=1&${QUERY}")
+  recommendations=$(curl --max-time 15 --retry 3 -fsSL "https://api.nordvpn.com/v1/servers/recommendations?&filters\[servers_technologies\]\[identifier\]=wireguard_udp&limit=1&${search}")
   iptables -D OUTPUT -o eth0 -p tcp --dport 443 -j ACCEPT
   server=$(echo "${recommendations}" | jq -r '.[0] | del(.services, .technologies)')
   [[ -z ${server} ]] && return
@@ -95,7 +100,7 @@ auto_select_server()
 
   echo "[+] Finding fastest server...."
 
-  [[ "${PROV}" == "nordvpn" ]] && { auto_nordvpn; return; }
+  [[ "${PROV}" == "nordvpn" ]] && { nordvpn_select; return; }
 
   # pos="$1"
   # [[ -z $pos ]] && pos=0
@@ -203,7 +208,7 @@ mullvad_select()
 
   # Check if it is a direct match
   AUTO_SERVER=$(jq -r '.countries[].cities[].relays[] | select(.hostname == "'"$search"'") | .hostname' "${MV_JSON_FILE}")
-  [[ ! -z $AUTO_SERVER ]] && return 0
+  [[ -n $AUTO_SERVER ]] && return 0
 
   # First try to see if 'search' matches COUNTRY. Otherwise try matching 'search' with CITY.
   # Pick a random city by country
@@ -213,8 +218,8 @@ mullvad_select()
     city=$(jq -r '.countries[].cities[] | select(.name | match("^'"$search"'"; "i")) | .name'  "${MV_JSON_FILE}" | shuf -n1)
   fi
 
-  [[ ! -z $city ]] && AUTO_SERVER=$(jq -r '.countries[].cities[] | select(.name == "'"${city}"'") | .relays[].hostname'  "${MV_JSON_FILE}" | shuf -n1)
-  [[ ! -z $AUTO_SERVER ]] && return 0
+  [[ -n $city ]] && AUTO_SERVER=$(jq -r '.countries[].cities[] | select(.name == "'"${city}"'") | .relays[].hostname'  "${MV_JSON_FILE}" | shuf -n1)
+  [[ -n $AUTO_SERVER ]] && return 0
 
   return 255
 }
@@ -300,6 +305,8 @@ wg_up()
     WG_DNS="$(grep ^DNS "${cf}")"
     WG_DNS="${WG_DNS##* }"
   else
+    nordvpn_select "${sname,,}"
+    sname="${AUTO_SERVER}(${sname##*=})"
     # NordVPN's DNS servers
     WG_DNS="103.86.96.100,103.86.99.100"
   fi

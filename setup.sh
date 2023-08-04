@@ -31,7 +31,11 @@ done
 # Mullvad stubs
 echo "Creating Mullvad stubs"
 [[ ! -d /etc/wireguard-mullvad ]] && mkdir -p /etc/wireguard-mullvad 
-curl -fsSL https://api.mullvad.net/public/relays/wireguard/v1/ >/etc/wireguard-mullvad/mullvad.json
+curl -fsSL https://api.mullvad.net/public/relays/wireguard/v1/ >/etc/wireguard-mullvad/mullvad.json || {
+	echo >&2 "Using OLD /config/mullvad.json."
+	sleep 5
+	cp /config/mullvad.json /etc/wireguard-mullvad/mullvad.json
+}
 
 # For each single hostname create a config file that contains the
 # COUNTRY + CITY + PUBLIC_KEY + IP
